@@ -16,17 +16,27 @@ library(xml2)
 INPUT_FILE  <- "efo.owl"
 OUTPUT_FILE <- "efo_cancer_terms.tsv"
 
-# EFO URI prefix and the EFO number for the top-level "cancer" class
-EFO_URI_PREFIX  <- "http://www.ebi.ac.uk/efo/EFO_"
+# EFO URI prefixes and the EFO number for the top-level "cancer" class
+EFO_URI_PREFIXES <- c(
+  "http://www.ebi.ac.uk/efo/EFO_",
+  "http://purl.obolibrary.org/obo/EFO_"
+)
 CANCER_ROOT_EFO <- "0000311"
 
 # ---------------------------------------------------------------------------- #
-# Helper: convert EFO URI to EFO:XXXXXXX identifier
+# Helpers
 # ---------------------------------------------------------------------------- #
 
+is_efo_uri <- function(uri) {
+  any(startsWith(uri, EFO_URI_PREFIXES))
+}
+
+# Convert any EFO URI to an EFO:XXXXXXX identifier
 uri_to_efo_id <- function(uri) {
-  efo_num <- sub(EFO_URI_PREFIX, "", uri, fixed = TRUE)
-  paste0("EFO:", efo_num)
+  m <- regexpr("EFO_[0-9]{7}", uri)
+  if (m[[1]] == -1) return(NA_character_)
+  efo_token <- regmatches(uri, m)
+  sub("^EFO_", "EFO:", efo_token)
 }
 
 # ---------------------------------------------------------------------------- #
@@ -60,7 +70,7 @@ for (cls in classes) {
   attrs <- xml_attrs(cls)
   if (!"rdf:about" %in% names(attrs)) next
   uri <- attrs[["rdf:about"]]
-  if (!startsWith(uri, EFO_URI_PREFIX)) next
+  if (!is_efo_uri(uri)) next
 
   # Get rdfs:label
   lbl_nodes <- xml_find_all(cls, "rdfs:label", ns)
@@ -77,7 +87,7 @@ for (cls in classes) {
     sc_attrs <- xml_attrs(sc)
     if (!"rdf:resource" %in% names(sc_attrs)) next
     parent_uri <- sc_attrs[["rdf:resource"]]
-    if (!startsWith(parent_uri, EFO_URI_PREFIX)) next
+    if (!is_efo_uri(parent_uri)) next
     children_map[[parent_uri]] <- c(children_map[[parent_uri]], uri)
   }
 }
@@ -86,7 +96,8 @@ for (cls in classes) {
 # Breadth-first traversal from the cancer root
 # ---------------------------------------------------------------------------- #
 
-cancer_root_uri <- paste0(EFO_URI_PREFIX, CANCER_ROOT_EFO)
+# Use the OBO PURL form for the root URI to match common EFO OWL distributions
+cancer_root_uri <- paste0("http://purl.obolibrary.org/obo/EFO_", CANCER_ROOT_EFO)
 
 visited <- character(0)
 queue   <- cancer_root_uri
