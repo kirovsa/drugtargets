@@ -96,8 +96,25 @@ for (cls in classes) {
 # Breadth-first traversal from the cancer root
 # ---------------------------------------------------------------------------- #
 
-# Use the OBO PURL form for the root URI to match common EFO OWL distributions
-cancer_root_uri <- paste0("http://purl.obolibrary.org/obo/EFO_", CANCER_ROOT_EFO)
+# Resolve the cancer root URI robustly: pick whichever IRI form (EBI or OBO
+# PURL) actually appears in the parsed ontology (has a label or has children).
+root_candidates <- c(
+  paste0("http://www.ebi.ac.uk/efo/EFO_", CANCER_ROOT_EFO),
+  paste0("http://purl.obolibrary.org/obo/EFO_", CANCER_ROOT_EFO)
+)
+
+cancer_root_uri <- root_candidates[
+  which(vapply(root_candidates, function(u) {
+    (!is.null(node_labels[[u]])) || (!is.null(children_map[[u]]))
+  }, logical(1)))[1]
+]
+
+if (is.null(cancer_root_uri) || length(cancer_root_uri) == 0 || is.na(cancer_root_uri)) {
+  stop("Could not resolve cancer root URI for EFO_", CANCER_ROOT_EFO,
+       " in this OWL file (neither label nor children found for either candidate IRI).")
+}
+
+message("Using cancer root URI: ", cancer_root_uri)
 
 visited <- character(0)
 queue   <- cancer_root_uri
