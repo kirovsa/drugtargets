@@ -1,19 +1,19 @@
-# Extract cancer-related terms from the EFO (Experimental Factor Ontology) OWL file.
+# Extract cancer-related terms from the EFO (Experimental Factor Ontology) OBO JSON file.
 #
-# Reads efo.owl, finds the top-level "cancer" term (EFO:0000311), and
-# traverses all descendant branches via subClassOf relationships using breadth-first
-# search. Only EFO-prefixed nodes are included in the output.
+# Reads efo.json (OBO JSON format), finds the top-level "cancer" term
+# (EFO:0000311), and traverses all descendant branches via is_a relationships
+# using breadth-first search. Only EFO-prefixed nodes are included in the output.
 # Writes the results as a tab-delimited file with two columns:
 #   efo_id      - EFO identifier in EFO:XXXXXXX format
 #   description - human-readable term label
 
-library(xml2)
+library(jsonlite)
 
 # ---------------------------------------------------------------------------- #
 # Configuration
 # ---------------------------------------------------------------------------- #
 
-INPUT_FILE  <- "efo.owl"
+INPUT_FILE  <- "efo.json"
 OUTPUT_FILE <- "efo_cancer_terms.tsv"
 
 # EFO URI prefixes and the EFO number for the top-level "cancer" class
@@ -44,52 +44,37 @@ uri_to_efo_id <- function(uri) {
 # ---------------------------------------------------------------------------- #
 
 message("Reading ", INPUT_FILE, " ...")
-doc <- read_xml(INPUT_FILE)
+ont <- fromJSON(INPUT_FILE, simplifyVector = FALSE)
+graph <- ont[["graphs"]][[1]]
 
-ns <- c(
-  owl  = "http://www.w3.org/2002/07/owl#",
-  rdf  = "http://www.w3.org/1999/02/22-rdf-syntax-ns#",
-  rdfs = "http://www.w3.org/2000/01/rdf-schema#"
-)
+nodes <- graph[["nodes"]]
+edges <- graph[["edges"]]
 
 # ---------------------------------------------------------------------------- #
 # Build lookup structures
 # ---------------------------------------------------------------------------- #
 
-# Find all owl:Class elements
-classes <- xml_find_all(doc, "//owl:Class", ns)
-
 # Map from URI -> label for all EFO nodes that have a label
 node_labels <- list()
+for (node in nodes) {
+  id <- node[["id"]]
+  if (!is_efo_uri(id)) next
+  lbl <- node[["lbl"]]
+  if (!is.null(lbl) && nchar(lbl) > 0) {
+    node_labels[[id]] <- lbl
+  }
+}
 
-# Build children map: parent URI -> vector of child URIs (subClassOf only,
+# Build children map: parent URI -> vector of child URIs (is_a edges only,
 # restricted to EFO-prefixed nodes on both ends)
 children_map <- list()
-
-for (cls in classes) {
-  attrs <- xml_attrs(cls)
-  if (!"rdf:about" %in% names(attrs)) next
-  uri <- attrs[["rdf:about"]]
-  if (!is_efo_uri(uri)) next
-
-  # Get rdfs:label
-  lbl_nodes <- xml_find_all(cls, "rdfs:label", ns)
-  if (length(lbl_nodes) > 0) {
-    lbl <- xml_text(lbl_nodes[[1]])
-    if (!is.na(lbl) && nchar(lbl) > 0) {
-      node_labels[[uri]] <- lbl
-    }
-  }
-
-  # Get named superclasses (subClassOf with rdf:resource, not anonymous restrictions)
-  sc_nodes <- xml_find_all(cls, "rdfs:subClassOf", ns)
-  for (sc in sc_nodes) {
-    sc_attrs <- xml_attrs(sc)
-    if (!"rdf:resource" %in% names(sc_attrs)) next
-    parent_uri <- sc_attrs[["rdf:resource"]]
-    if (!is_efo_uri(parent_uri)) next
-    children_map[[parent_uri]] <- c(children_map[[parent_uri]], uri)
-  }
+for (edge in edges) {
+  if (edge[["pred"]] != "is_a") next
+  parent <- edge[["obj"]]
+  child  <- edge[["sub"]]
+  if (!is_efo_uri(parent)) next
+  if (!is_efo_uri(child))  next
+  children_map[[parent]] <- c(children_map[[parent]], child)
 }
 
 # ---------------------------------------------------------------------------- #
@@ -111,7 +96,7 @@ cancer_root_uri <- root_candidates[
 
 if (is.null(cancer_root_uri) || length(cancer_root_uri) == 0 || is.na(cancer_root_uri)) {
   stop("Could not resolve cancer root URI for EFO_", CANCER_ROOT_EFO,
-       " in this OWL file (neither label nor children found for either candidate IRI).")
+       " in this efo.json file (neither label nor children found for either candidate IRI).")
 }
 
 message("Using cancer root URI: ", cancer_root_uri)
