@@ -1,8 +1,8 @@
 # Extract cancer-related terms from the EFO (Experimental Factor Ontology) OBO file.
 #
 # Reads efo.obo (OBO format), finds the top-level "cancer" term (EFO:0000311),
-# and traverses all descendant branches via is_a relationships using
-# breadth-first search.
+# and traverses all descendant branches via is_a relationships (and all other
+# relationship tags present in the OBO) using breadth-first search.
 #
 # Output: a tab-delimited file with two columns:
 #   efo_id      - EFO identifier in EFO:XXXXXXX format
@@ -29,11 +29,28 @@ CANCER_ROOT_ID <- "EFO:0000311"
 # Helpers
 # ---------------------------------------------------------------------------- #
 
-# Build a children map from parent_id -> character vector of child_ids
-# ontologyIndex objects store:
-#   - id: character vector of term IDs
-#   - name: character vector of term names aligned with id
-#   - is_a: list of parent-ID character vectors aligned with id
+# Normalize a vector of relationship values to parent IDs.
+#
+# ontologyIndex may store relationship values either as plain IDs ("EFO:...")
+# or as strings with trailing annotations. This helper extracts the first token
+# and keeps only non-empty strings.
+extract_parent_ids <- function(x) {
+  if (is.null(x) || length(x) == 0) return(character(0))
+  x <- as.character(x)
+  x <- sub("[[:space:]].*$", "", x)  # keep first token only
+  x <- x[nzchar(x)]
+  unique(x)
+}
+
+# Build a children map from parent_id -> character vector of child_ids.
+#
+# This uses:
+#   - ont$is_a
+#   - plus *all other relationship-like tags* that ontologyIndex exposed as
+#     list-valued fields aligned to ont$id.
+#
+# We intentionally skip core structural fields (parents/children/ancestors etc.)
+# to avoid double-counting or introducing computed links.
 build_children_map <- function(ont) {
   children_map <- list()
 
@@ -42,22 +59,52 @@ build_children_map <- function(ont) {
   }
 
   ids <- ont$id
-  parents_list <- ont$is_a
-  if (is.null(parents_list)) {
-    parents_list <- vector("list", length(ids))
-  }
+
+  # Fields we do not want to treat as relationship tags.
+  skip_fields <- c(
+    "id", "name",
+    "parents", "children", "ancestors",
+    "obsolete",
+    # metadata fields frequently present when extract_tags = "everything"
+    "format-version", "data-version", "subsetdef", "synonymtypedef",
+    "idspace", "remark", "ontology", "owl-axioms",
+    "domain", "range", "inverse_of",
+    "is_transitive", "is_metadata_tag", "is_class_level",
+    "is_functional", "is_inverse_functional", "is_symmetric",
+    "holds_over_chain", "transitive_over",
+    "expand_assertion_to", "expand_expression_to",
+    "union_of", "intersection_of", "disjoint_from",
+    "equivalent_to"
+  )
+
+  # Candidate relationship fields are list-valued and length == length(ids)
+  # (i.e., aligned by term index).
+  rel_fields <- setdiff(names(ont), skip_fields)
+  rel_fields <- rel_fields[vapply(rel_fields, function(nm) {
+    v <- ont[[nm]]
+    is.list(v) && length(v) == length(ids)
+  }, logical(1))]
+
+  # Ensure is_a is always included (even if user provided it in skip_fields).
+  rel_fields <- unique(c("is_a", rel_fields))
 
   for (i in seq_along(ids)) {
-    id <- ids[[i]]
-    parents <- parents_list[[i]]
-    if (is.null(parents) || length(parents) == 0) next
+    child_id <- ids[[i]]
 
-    # parent IDs should already be clean IDs; keep non-empty
-    parent_ids <- parents[nzchar(parents)]
+    for (field in rel_fields) {
+      parents_raw <- ont[[field]][[i]]
+      parent_ids <- extract_parent_ids(parents_raw)
+      if (length(parent_ids) == 0) next
 
-    for (p in parent_ids) {
-      children_map[[p]] <- c(children_map[[p]], id)
+      for (p in parent_ids) {
+        children_map[[p]] <- c(children_map[[p]], child_id)
+      }
     }
+  }
+
+  # Deduplicate children lists
+  for (p in names(children_map)) {
+    children_map[[p]] <- unique(children_map[[p]])
   }
 
   children_map
@@ -78,7 +125,7 @@ get_term_label <- function(ont, id) {
 # ---------------------------------------------------------------------------- #
 
 message("Reading ", INPUT_FILE, " ...")
-ont <- get_ontology(INPUT_FILE, extract_tags = "everything")
+toont <- get_ontology(INPUT_FILE, extract_tags = "everything")
 
 # ---------------------------------------------------------------------------- #
 # Build lookup structures
@@ -112,39 +159,4 @@ while (length(queue) > 0) {
   }
 }
 
-message("Found ", length(visited), " cancer-related terms (including root).")
-
-# ---------------------------------------------------------------------------- #
-# Assemble output
-# ---------------------------------------------------------------------------- #
-
-descriptions <- vapply(visited, function(id) get_term_label(ont, id), character(1))
-
-result <- data.frame(
-  efo_id      = visited,
-  description = descriptions,
-  stringsAsFactors = FALSE
-)
-
-# Remove any terms without a label (e.g. obsolete / anonymous nodes)
-result <- result[!is.na(result$description) & nzchar(result$description), ]
-
-# Sort by EFO number for reproducible output
-# (keep only EFO:XXXXXXX IDs; anything else will sort last)
-get_num <- function(x) {
-  m <- regexpr("EFO:[0-9]{7}", x)
-  if (m[[1]] == -1) return(Inf)
-  as.numeric(sub("EFO:", "", regmatches(x, m)))
-}
-
-result <- result[order(vapply(result$efo_id, get_num, numeric(1))), ]
-rownames(result) <- NULL
-
-# ---------------------------------------------------------------------------- #
-# Write output
-# ---------------------------------------------------------------------------- #
-
-write.table(result, file = OUTPUT_FILE, sep = "\t",
-            quote = FALSE, row.names = FALSE, col.names = TRUE)
-
-message("Wrote ", nrow(result), " rows to ", OUTPUT_FILE)
+message("Found \
