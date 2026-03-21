@@ -7,13 +7,13 @@
 # Output: a tab-delimited file with two columns:
 #   efo_id      - EFO identifier in EFO:XXXXXXX format
 #   description - human-readable term label
-
+#
 # Dependencies:
-#   - obo: for reading OBO format into R
+#   - ontologyIndex: for reading OBO format into R
 # Install:
-#   install.packages("obo")
+#   install.packages("ontologyIndex")
 
-library(obo)
+library(ontologyIndex)
 
 # ---------------------------------------------------------------------------- #
 # Configuration
@@ -30,26 +30,30 @@ CANCER_ROOT_ID <- "EFO:0000311"
 # ---------------------------------------------------------------------------- #
 
 # Build a children map from parent_id -> character vector of child_ids
-build_children_map <- function(obo_obj) {
+# ontologyIndex objects store:
+#   - id: character vector of term IDs
+#   - name: character vector of term names aligned with id
+#   - is_a: list of parent-ID character vectors aligned with id
+build_children_map <- function(ont) {
   children_map <- list()
 
-  # obo_obj$stanzas is typically a named list keyed by IDs (e.g. EFO:0000311)
-  stanzas <- obo_obj$stanzas
-  if (is.null(stanzas) || length(stanzas) == 0) {
-    stop("No stanzas found in parsed OBO.")
+  if (is.null(ont$id) || length(ont$id) == 0) {
+    stop("No term IDs found in parsed OBO.")
   }
 
-  for (id in names(stanzas)) {
-    stanza <- stanzas[[id]]
+  ids <- ont$id
+  parents_list <- ont$is_a
+  if (is.null(parents_list)) {
+    parents_list <- vector("list", length(ids))
+  }
 
-    # 'is_a' is usually a character vector like:
-    #   "EFO:0000311 ! cancer"
-    parents <- stanza[["is_a"]]
-    if (is.null(parents)) next
+  for (i in seq_along(ids)) {
+    id <- ids[[i]]
+    parents <- parents_list[[i]]
+    if (is.null(parents) || length(parents) == 0) next
 
-    # extract parent IDs before any annotation after space
-    parent_ids <- sub("[[:space:]].*$", "", parents)
-    parent_ids <- parent_ids[nzchar(parent_ids)]
+    # parent IDs should already be clean IDs; keep non-empty
+    parent_ids <- parents[nzchar(parents)]
 
     for (p in parent_ids) {
       children_map[[p]] <- c(children_map[[p]], id)
@@ -60,11 +64,11 @@ build_children_map <- function(obo_obj) {
 }
 
 # Get label/name for a given term ID
-get_term_label <- function(obo_obj, id) {
-  stanza <- obo_obj$stanzas[[id]]
-  if (is.null(stanza)) return(NA_character_)
+get_term_label <- function(ont, id) {
+  idx <- match(id, ont$id)
+  if (is.na(idx)) return(NA_character_)
 
-  nm <- stanza[["name"]]
+  nm <- ont$name[[idx]]
   if (is.null(nm) || length(nm) == 0) return(NA_character_)
   nm[[1]]
 }
@@ -74,19 +78,19 @@ get_term_label <- function(obo_obj, id) {
 # ---------------------------------------------------------------------------- #
 
 message("Reading ", INPUT_FILE, " ...")
-test <- read.obo(INPUT_FILE)
+ont <- get_ontology(INPUT_FILE, extract_tags = "everything")
 
 # ---------------------------------------------------------------------------- #
 # Build lookup structures
 # ---------------------------------------------------------------------------- #
 
-children_map <- build_children_map(test)
+children_map <- build_children_map(ont)
 
 # ---------------------------------------------------------------------------- #
 # Breadth-first traversal from the cancer root
 # ---------------------------------------------------------------------------- #
 
-if (is.null(test$stanzas[[CANCER_ROOT_ID]])) {
+if (!(CANCER_ROOT_ID %in% ont$id)) {
   stop("Could not find cancer root term ", CANCER_ROOT_ID, " in ", INPUT_FILE)
 }
 
@@ -114,7 +118,7 @@ message("Found ", length(visited), " cancer-related terms (including root).")
 # Assemble output
 # ---------------------------------------------------------------------------- #
 
-descriptions <- vapply(visited, function(id) get_term_label(test, id), character(1))
+descriptions <- vapply(visited, function(id) get_term_label(ont, id), character(1))
 
 result <- data.frame(
   efo_id      = visited,
